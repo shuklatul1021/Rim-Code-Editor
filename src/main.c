@@ -13,8 +13,10 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define ABUF_INIT {NULL , 0}
+#define KILO_VERSION "0.1"
 
 struct editor_config {
+    int cx, cy;   //curser axis 
     int screenrows;
     int screencols;
     struct termios orig_termios;
@@ -39,7 +41,7 @@ void ab_append(struct abuf *ab , const char *s , int len){
 }
 
 void ab_free(struct abuf *ab){
-    free(ab->b)
+    free(ab->b);
 }
 
 void die(const char *s){
@@ -71,6 +73,7 @@ void enable_raw_mode(){
 
     if(tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
+
 /**
  * STDIN_FILENO 
  * It is the file descripter from standard input stdin
@@ -84,9 +87,30 @@ char editor_read_key(){
     int nread;
     char c;
     while((nread = read(STDIN_FILENO , &c , 1)) != 1){
-        if(nread== -1 && errno != EAGAIN) die("read");
+        if(nread == -1 && errno != EAGAIN) die("read");
     }
-    return c;
+    if(c == '\x1b'){
+        char seq[3];
+    }else{
+        return c;    
+    }
+}
+
+void editor_move_curser(char key){
+    switch(key){
+        case 'a':
+            E.cx--;
+            break;
+        case 'd':
+            E.cx++;
+            break;
+        case 'w':
+            E.cx--;
+            break;
+        case 's':
+            E.cx++;
+            break;
+    }
 }
 
 void editor_process_keypress(){
@@ -98,29 +122,59 @@ void editor_process_keypress(){
             write(STDOUT_FILENO , "\x1b[H" , 4);
             exit(0);
             break;
+        case 'w':
+        case 's':
+        case 'a':
+        case 'd':
+            editor_move_curser(c);
+            break;
     }
 }
 
 void editor_draw_rows(struct abuf *ab){
     int y;
     for(y = 0 ; y < E.screenrows ; y++){
-        ab_append(ab , "~" , 1);
+        if(y == E.screenrows / 3){
+            char welcome[80];
+            int welcomelen = snprintf(welcome , sizeof(welcome) , "Rim Editor -- version %s" , KILO_VERSION);
+            if(welcomelen > E.screencols) welcomelen = E.screencols;
+            //Center the Welcome Screen
+            int padding = (E.screencols - welcomelen) / 2;
+            if(padding){
+                ab_append(ab , "~" , 1);
+                padding--;
+            }
+            while(padding --) ab_append(ab , " ", 1);
+            ab_append(ab , welcome , welcomelen);
+        }else{
+            ab_append(ab , "~" , 1);
+        }
 
+        
+
+        ab_append(ab , "\x1b[K", 3);
         if(y < E.screenrows - 1 ){
             ab_append(ab , "\r\n" , 2);
         }
     }
 }
 
+
+
 void editor_refresh_screen(){
     struct abuf ab = ABUF_INIT;
 
-    ab_append(&ab , "\x1b[2J" , 4);
+    ab_append(&ab , "\x1b[?25J" , 6);
     ab_append(&ab , "\x1b[H" , 3);
 
     editor_draw_rows(&ab);
     
+    char buf[32];
+    snprintf(buf , sizeof(buf) , "\x1b[%d;%dH" , E.cy + 1 , E.cx + 1);
+    ab_append(&ab , buf , strlen(buf));
+
     ab_append(&ab , "\x1b[H" , 3);
+    ab_append(&ab , "\x1b[?25J" , 6);
 
     write(STDOUT_FILENO , ab.b , ab.len);
     ab_free(&ab);
@@ -159,6 +213,8 @@ int get_window_size(int *rows , int *cols){
 }
 
 void init_editor(){
+    E.cx = 0;
+    E.cy = 0;
     if(get_window_size(&E.screenrows , &E.screencols) == -1) die("getWindowSize");
 }
 
