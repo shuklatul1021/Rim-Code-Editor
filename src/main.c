@@ -1,3 +1,8 @@
+
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,12 +13,19 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <string.h>
 #include <errno.h>
+
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define ABUF_INIT {NULL , 0}
 #define KILO_VERSION "0.1"
+
+typedef struct erow {
+    int size;
+    char *chars;
+} erow;
 
 enum editor_key {
     ARROW_LEFT = 1000,
@@ -34,22 +46,52 @@ struct editor_config {
     int cx, cy; 
     int screenrows;
     int screencols;
+    int numrows;
+    erow *row;
     struct termios orig_termios;
 };
 
 struct abuf {
     char *b;
     int len;
-}
-;
+};
+
 struct editor_config E;
+
+
+void editor_append_row(char *s , size_t len){
+    E.row = realloc(E.row , sizeof(erow) * (E.numrows + 1));
+    int at = E.numrows;
+
+    E.row[at].size = len;
+    E.row[at].chars = malloc(len + 1);
+    memcmp(E.row[at].chars , s , len);
+    E.row[at].chars[len] = '\0';
+    E.numrows++;
+}
+
+
+void editor_open(char *filename){
+    FILE *fp = fopen(filename , 'r');
+    if(!fp) die("open");
+
+    char *line = NULL;
+    size_t linecap = 0;
+    ssize_t linelen;
+    while((linelen = getline(&line , &linecap , fp)) != -1){
+        while ( linelen > 0 && (line[linelen - 1] == '\n' || line[linelen -1] == '\r')) linelen--;
+        editor_append_row(line , linelen);
+    }
+
+    free(line);
+    fclose(fp); 
+}
 
 
 void ab_append(struct abuf *ab , const char *s , int len){
     char *new = realloc(ab->b , ab->len + len);
 
     if(new == NULL) return;
-
     memcpy(&new[ab->len] , s , len);
     ab->b = new;
     ab->len += len;
@@ -107,8 +149,8 @@ int editor_read_key(){
     if(c == '\x1b'){
         char seq[3];
 
-        if(read(STDOUT_FILENO , &seq[0] , 1) != -1) return '\x1b';
-        if(read(STDOUT_FILENO , &seq[1] , 1) != -1) return '\x1b';
+        if(read(STDIN_FILENO , &seq[0] , 1) != -1) return '\x1b';
+        if(read(STDIN_FILENO , &seq[1] , 1) != -1) return '\x1b';
 
         if(seq[0] == '['){
             if(seq[1] >= '0' && seq[1] <= '9'){
@@ -210,24 +252,30 @@ void editor_process_keypress(){
 void editor_draw_rows(struct abuf *ab){
     int y;
     for(y = 0 ; y < E.screenrows ; y++){
-        if(y == E.screenrows / 3){
-            char welcome[80];
-            int welcomelen = snprintf(welcome , sizeof(welcome) , "Rim Editor -- version %s" , KILO_VERSION);
-            if(welcomelen > E.screencols) welcomelen = E.screencols;
-            //Center the Welcome Screen
-            int padding = (E.screencols - welcomelen) / 2;
-            if(padding){
+        if( y >= E.numrows){
+            if(E.numrows == 0 && y == E.screenrows / 3){
+                char welcome[80];
+                int welcomelen = snprintf(welcome , sizeof(welcome) , "Rim Editor -- version %s" , KILO_VERSION);
+                if(welcomelen > E.screencols) welcomelen = E.screencols;
+                //Center the Welcome Screen
+                int padding = (E.screencols - welcomelen) / 2;
+                if(padding){
+                    ab_append(ab , "~" , 1);
+                    padding--;
+                }
+                while(padding --) ab_append(ab , " ", 1);
+                ab_append(ab , welcome , welcomelen);
+            }else{
                 ab_append(ab , "~" , 1);
-                padding--;
             }
-            while(padding --) ab_append(ab , " ", 1);
-            ab_append(ab , welcome , welcomelen);
+            ab_append(ab , "\x1b[K", 3);
+            if(y < E.screenrows - 1 ){
+                ab_append(ab , "\r\n" , 2);
+            }
         }else{
-            ab_append(ab , "~" , 1);
-        }
-        ab_append(ab , "\x1b[K", 3);
-        if(y < E.screenrows - 1 ){
-            ab_append(ab , "\r\n" , 2);
+            int len = E.row[y].size;
+            if (len > E.screencols) len = E.screencols;
+            ab_append(ab , E.row[y].chars , len);
         }
     }
 }
@@ -288,12 +336,17 @@ int get_window_size(int *rows , int *cols){
 void init_editor(){
     E.cx = 0;
     E.cy = 0;
+    E.numrows = 0;
+    E.row = NULL;
     if(get_window_size(&E.screenrows , &E.screencols) == -1) die("getWindowSize");
 }
 
-int main(){
+int main(int argc , char **argv){
     enable_raw_mode();
     init_editor();
+    if(argc >= 2){
+        editor_open(argv[1]);
+    }
 
     while (1){
         editor_refresh_screen();
