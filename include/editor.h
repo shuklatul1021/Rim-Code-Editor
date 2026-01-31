@@ -1,5 +1,6 @@
 #ifndef CODE_EDITOR_H
 #define CODE_EDITOR_H
+
 #include <termios.h>
 
 typedef struct erow {
@@ -35,9 +36,6 @@ struct abuf {
     char *b;
     int len;
 };
-
-
-
 
 
 #endif
