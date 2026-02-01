@@ -44,6 +44,8 @@ enum editor_key {
 
 struct editor_config {
     int cx, cy; 
+    int rowoff;
+    int coloff;
     int screenrows;
     int screencols;
     int numrows;
@@ -65,14 +67,14 @@ void editor_append_row(char *s , size_t len){
 
     E.row[at].size = len;
     E.row[at].chars = malloc(len + 1);
-    memcmp(E.row[at].chars , s , len);
+    memcpy(E.row[at].chars , s , len);
     E.row[at].chars[len] = '\0';
     E.numrows++;
 }
 
 
 void editor_open(char *filename){
-    FILE *fp = fopen(filename , 'r');
+    FILE *fp = fopen(filename , "r");
     if(!fp) die("open");
 
     char *line = NULL;
@@ -149,8 +151,8 @@ int editor_read_key(){
     if(c == '\x1b'){
         char seq[3];
 
-        if(read(STDIN_FILENO , &seq[0] , 1) != -1) return '\x1b';
-        if(read(STDIN_FILENO , &seq[1] , 1) != -1) return '\x1b';
+        if(read(STDIN_FILENO , &seq[0] , 1) != 1) return '\x1b';
+        if(read(STDIN_FILENO , &seq[1] , 1) != 1) return '\x1b';
 
         if(seq[0] == '['){
             if(seq[1] >= '0' && seq[1] <= '9'){
@@ -197,17 +199,16 @@ void editor_move_curser(int key){
             }
             break;
         case ARROW_RIGHT:
-            if(E.cx != E.screencols - 1){
-                E.cx++;
-            }
+            E.cx++;
             break;
+           
         case ARROW_UP:
             if(E.cy != 0){
                 E.cy--;
             }
             break;
         case ARROW_DOWN:
-            if(E.cy != E.screenrows - 1){
+            if(E.cy < E.numrows){
                 E.cy++;
             }
             break;
@@ -252,12 +253,12 @@ void editor_process_keypress(){
 void editor_draw_rows(struct abuf *ab){
     int y;
     for(y = 0 ; y < E.screenrows ; y++){
-        if( y >= E.numrows){
+        int filerow = y + E.rowoff;
+        if( filerow >= E.numrows){
             if(E.numrows == 0 && y == E.screenrows / 3){
                 char welcome[80];
                 int welcomelen = snprintf(welcome , sizeof(welcome) , "Rim Editor -- version %s" , KILO_VERSION);
                 if(welcomelen > E.screencols) welcomelen = E.screencols;
-                //Center the Welcome Screen
                 int padding = (E.screencols - welcomelen) / 2;
                 if(padding){
                     ab_append(ab , "~" , 1);
@@ -268,21 +269,40 @@ void editor_draw_rows(struct abuf *ab){
             }else{
                 ab_append(ab , "~" , 1);
             }
-            ab_append(ab , "\x1b[K", 3);
-            if(y < E.screenrows - 1 ){
-                ab_append(ab , "\r\n" , 2);
-            }
+            
         }else{
-            int len = E.row[y].size;
+            int len = E.row[filerow].size - E.coloff;
+            if(len < 0) len = 0;
             if (len > E.screencols) len = E.screencols;
-            ab_append(ab , E.row[y].chars , len);
+            ab_append(ab , &E.row[filerow].chars[E.coloff] , len);
         }
+
+        ab_append(ab , "\x1b[K", 3);
+        if(y < E.screenrows - 1 ){
+            ab_append(ab , "\r\n" , 2);
+        }
+    }
+}
+
+void editor_scroll(){
+    if(E.cy < E.rowoff){
+        E.rowoff = E.cy;
+    }
+    if(E.cy >= E.rowoff + E.screenrows){
+        E.rowoff = E.cy - E.screenrows + 1;
+    }
+    if(E.cx < E.coloff){
+        E.coloff = E.cx;
+    }
+    if(E.cx >= E.coloff + E.screencols){
+        E.coloff = E.cx - E.screencols + 1;
     }
 }
 
 
 
 void editor_refresh_screen(){
+    editor_scroll();
     struct abuf ab = ABUF_INIT;
 
     ab_append(&ab , "\x1b[?25J" , 6);
@@ -291,7 +311,7 @@ void editor_refresh_screen(){
     editor_draw_rows(&ab);
     
     char buf[32];
-    snprintf(buf , sizeof(buf) , "\x1b[%d;%dH" , E.cy + 1 , E.cx + 1);
+    snprintf(buf , sizeof(buf) , "\x1b[%d;%dH" , (E.cy - E.rowoff) + 1 , (E.cx - E.coloff) + 1);
     ab_append(&ab , buf , strlen(buf));
 
     ab_append(&ab , "\x1b[H" , 3);
@@ -315,6 +335,7 @@ int get_curser_postion(int *row , int *col){
         i++;
     }
     buf[i] = "\0";
+
     if(buf[0] != '\x1b' || buf[1] != '[') return -1;
     if(sscanf(&buf[2] , "%d;%d" , row , col) != 2) return -1;
 
@@ -336,6 +357,8 @@ int get_window_size(int *rows , int *cols){
 void init_editor(){
     E.cx = 0;
     E.cy = 0;
+    E.rowoff = 0;
+    E.coloff = 0;
     E.numrows = 0;
     E.row = NULL;
     if(get_window_size(&E.screenrows , &E.screencols) == -1) die("getWindowSize");
