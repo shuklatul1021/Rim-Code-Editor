@@ -14,6 +14,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <stdarg.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <string.h>
 #include <time.h>
@@ -24,6 +25,7 @@
 #define ABUF_INIT {NULL , 0}
 #define KILO_VERSION "0.1"
 #define KILO_TAB_STOP 8
+#define KILO_QUIT_TIME 3
 
 typedef struct erow {
     int size;
@@ -57,6 +59,7 @@ struct editor_config {
     int screencols;
     int numrows;
     erow *row;
+    int dirty;
     char *filename;
     char statusmessage[80];
     time_t statusmes_time;
@@ -69,6 +72,51 @@ struct abuf {
 };
 
 struct editor_config E;
+void editor_set_message(const char *fmt , ...);
+
+
+char *editor_rows_to_string(int *buflen){
+    int total_len = 0;
+    int j;
+    for(j = 0; j < E.numrows; j++){
+        total_len += E.row[j].size + 1;
+    }
+    *buflen = total_len;
+    char *buf = malloc(total_len);
+    char *p = buf;
+    for(j = 0 ; j < E.numrows ; j++){
+        memcpy(p , E.row[j].chars , E.row[j].size);
+        p += E.row[j].size;
+        *p = '\n';
+        p++;
+    }
+    return buf;
+}
+
+
+void editor_save(){
+    if(E.filename == NULL) return;
+
+    int len;
+    char *buf = editor_rows_to_string(&len);
+    int fd = open(E.filename , O_RDWR | O_CREAT , 0644);
+    if(fd != -1){
+        if((ftruncate(fd , len)) != -1){
+            if((write(fd , buf , len)) == len){
+                close(fd);
+                free(buf);
+                E.dirty = 0;
+                editor_set_message("%d bytes written to disk", len);
+                return;
+            }
+        }
+        close(fd);
+    }
+    
+    free(buf);
+    editor_set_message("Can't save! I/O error: %s", strerror(errno));
+}
+
 
 void editor_update_row(erow *row){
     int tabs = 0;
@@ -106,7 +154,9 @@ void editor_append_row(char *s , size_t len){
     E.row[at].rsize = 0;
     E.row[at].render = NULL;
     editor_update_row(&E.row[at]);
+
     E.numrows++;
+    E.dirty++;
 }
 
 void editor_row_insert_char(erow *row , int at , int c){
@@ -116,6 +166,7 @@ void editor_row_insert_char(erow *row , int at , int c){
     row->size++;
     row->chars[at] = c;
     editor_update_row(row);
+    E.dirty++;
 }
 
 void editor_insert_char(int c){
@@ -143,6 +194,7 @@ void editor_open(char *filename){
 
     free(line);
     fclose(fp); 
+    E.dirty = 0;
 }
 
 
@@ -285,6 +337,8 @@ void editor_move_curser(int key){
 }
 
 void editor_process_keypress(){
+    static int quit_times = KILO_QUIT_TIME;
+
     int c = editor_read_key();
 
     switch(c){
@@ -293,9 +347,19 @@ void editor_process_keypress(){
             break;
 
         case CTRL_KEY('q'):
+            if(E.dirty && quit_times > 0){
+                editor_set_message("WARNING!!! File has unsaved changes. " "Press Ctrl-Q %d more times to quit." , quit_times);
+                quit_times--;
+                return;
+            }
+
             write(STDOUT_FILENO , "\x1b[2J" , 4);
             write(STDOUT_FILENO , "\x1b[H" , 4);
             exit(0);
+            break;
+
+        case CTRL_KEY('s'):
+            editor_save();
             break;
 
         case HOME_KEY:
@@ -310,7 +374,7 @@ void editor_process_keypress(){
         case BACKSPACE:
         case CTRL_KEY('h'):
         case DEL_KEY:
-            //TOdo
+            //TODO
             break;
 
         case PAGE_UP:
@@ -344,6 +408,7 @@ void editor_process_keypress(){
             editor_insert_char(c);
             break;
     }
+    quit_times = KILO_QUIT_TIME;
 }
 
 void editor_draw_rows(struct abuf *ab){
@@ -412,7 +477,7 @@ void editor_scroll(){
 void editor_draw_status_bar(struct abuf *ab){
     ab_append(ab , "\x1b[7m" , 4);
     char status[80] , rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines" , E.filename ? E.filename : "[No Name]" , E.numrows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines" , E.filename ? E.filename : "[No Name]" , E.numrows , E.dirty ? "(modified)" : "");
     int rlen =  snprintf(rstatus , sizeof(rstatus) , "%d%d" , E.cy + 1 , E.numrows);
 
     if(len > E.screencols) len = E.screencols;
@@ -502,6 +567,7 @@ void init_editor(){
     E.coloff = 0;
     E.numrows = 0;
     E.row = NULL;
+    E.dirty = 0;
     E.filename = NULL;
     E.statusmessage[0] = '\0';
     E.statusmes_time = 0;
@@ -526,7 +592,7 @@ int main(int argc , char **argv){
         editor_open(argv[1]);
     }
 
-    editor_set_message("HELP: Ctrl-Q = quit");
+    editor_set_message("HELP: Ctrl-S = save | Ctrl-Q = quit");
 
     while (1){
         editor_refresh_screen();
