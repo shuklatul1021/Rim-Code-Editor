@@ -73,6 +73,8 @@ struct abuf {
 
 struct editor_config E;
 void editor_set_message(const char *fmt , ...);
+void editorRefreshScreen();
+char *editor_prompt(char *prompt)
 
 
 char *editor_rows_to_string(int *buflen){
@@ -95,7 +97,13 @@ char *editor_rows_to_string(int *buflen){
 
 
 void editor_save(){
-    if(E.filename == NULL) return;
+    if(E.filename == NULL){
+        E.filename = editor_prompt("Save As : %s");
+        if(E.filename == NULL){
+            editor_set_message("Save Aborted");
+            return;
+        }
+    }
 
     int len;
     char *buf = editor_rows_to_string(&len);
@@ -142,9 +150,11 @@ void editor_update_row(erow *row){
 }
 
 
-void editor_append_row(char *s , size_t len){
+void editor_insert_row(int at , char *s , size_t len){
+    if (at < 0 || at > E.numrows) return;
+
     E.row = realloc(E.row , sizeof(erow) * (E.numrows + 1));
-    int at = E.numrows;
+    memmove(&E.row[at + 1] , &E.row[at] , sizeof(erow) * (E.numrows - at));
 
     E.row[at].size = len;
     E.row[at].chars = malloc(len + 1);
@@ -169,9 +179,73 @@ void editor_row_insert_char(erow *row , int at , int c){
     E.dirty++;
 }
 
+void editor_row_append_string(erow *row , char *s , size_t len){
+    row->chars = realloc(row->chars , row->size + len + 1);
+    memcpy(&row->chars[row->size], s, len);
+    row->size += len;
+    row->chars[row->size] = '\0';
+    editor_update_row(row);
+    E.dirty++;
+}
+/**
+ *  
+ */
+
+void editor_row_del_char(erow *row , int at){
+    if (at < 0 || at >= row->size) return;
+    memmove(&row->chars[at] , &row->chars[at + 1] , row->size - at);
+    row->size--;
+    editor_update_row(row);
+    E.dirty++;
+}
+
+void editor_free_row(erow *row) {
+    free(row->render);
+    free(row->chars);
+}
+
+void editor_del_row(int at){
+    if(at < 0 || at >= E.numrows) return;
+    editor_free_row(&E.row[at]);
+    memmove(&E.row[at] , &E.row[at + 1] , sizeof(erow) * (E.numrows - at - 1));
+    E.numrows--;
+    E.dirty++;
+}
+
+void editor_del_char(){
+    if(E.cy == E.numrows ) return;
+    if(E.cx == 0 && E.cy == 0) return;
+
+    erow *row = &E.row[E.cy];
+    if(E.cx > 0){
+        editor_row_del_char(row , E.cx - 1);
+        E.cx--;
+    }else{
+        E.cx = E.row[E.cy - 1].size;
+        editor_row_append_string(&E.row[E.cy - 1] , row->chars , row->size);
+        editor_del_row(E.cy);
+        E.cy--;
+    }
+}
+
+void editor_insert_new_line(){
+    if(E.cx == 0){
+        editor_insert_row(E.cy , "" , 0);
+    }else {
+        erow *row = &E.row[E.cy];
+        editor_insert_row(E.cy + 1 , &row->chars[E.cx] , row->size - E.cx);
+        row = &E.row[E.cy];
+        row->size = E.cx;
+        row->chars[row->size] = '\0';
+        editor_update_row(row);
+    }
+    E.cy++;
+    E.cx = 0;
+}
+
 void editor_insert_char(int c){
     if(E.cy == E.numrows){
-        editor_append_row("" , 0);
+        editor_insert_row(E.numrows , "" , 0);
     }
     editor_row_insert_char(&E.row[E.cy] , E.cx , c);
     E.cx++;
@@ -189,7 +263,7 @@ void editor_open(char *filename){
     ssize_t linelen;
     while((linelen = getline(&line , &linecap , fp)) != -1){
         while ( linelen > 0 && (line[linelen - 1] == '\n' || line[linelen -1] == '\r')) linelen--;
-        editor_append_row(line , linelen);
+        editor_insert_row(E.numrows , line , linelen);
     }
 
     free(line);
@@ -299,6 +373,41 @@ int editor_read_key(){
     }
 }
 
+char *editor_prompt(char *prompt){
+    size_t bufsize = 128;
+    char *buf = malloc(bufsize);
+
+    size_t buflen = 0;
+    buf[0] = '\0';
+
+    while(1){
+        editor_set_message(prompt , buf);
+        editor_refresh_screen();
+
+        int c = editor_read_key();
+
+        if(c = DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE){
+            if(buflen != 0) buf[--buflen] = '\0';
+        }else if(c == '\x1b'){
+            editor_set_message("");
+            free(buf);
+            return NULL;
+        }else if(c == '\r'){
+            if(buflen != 0){
+                editor_set_message("");
+                return buf;
+            }
+        }else if(!iscntrl(c) && c < 128){
+            if(buflen == bufsize - 1){
+                bufsize *= 2;
+                buf = realloc(buf , bufsize);
+            }
+            buf[buflen++] = c;
+            buf[buflen] = '\0';
+        }
+    }
+}
+
 void editor_move_curser(int key){
     erow  *row = ( E.cy >= E.numrows ) ? NULL : &E.row[E.cy];
     switch(key){
@@ -336,6 +445,7 @@ void editor_move_curser(int key){
     }
 }
 
+
 void editor_process_keypress(){
     static int quit_times = KILO_QUIT_TIME;
 
@@ -343,7 +453,7 @@ void editor_process_keypress(){
 
     switch(c){
         case '\r':
-            //TODO
+            editor_insert_new_line();
             break;
 
         case CTRL_KEY('q'):
@@ -374,7 +484,8 @@ void editor_process_keypress(){
         case BACKSPACE:
         case CTRL_KEY('h'):
         case DEL_KEY:
-            //TODO
+            if(c == DEL_KEY) editor_move_curser(ARROW_RIGHT);
+            editor_del_char();
             break;
 
         case PAGE_UP:
