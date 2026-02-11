@@ -5,10 +5,13 @@
 
 typedef struct erow {
     int size;
+    int rsize;
     char *chars;
+    char *render;
 } erow;
 
 enum editor_key {
+    BACKSPACE = 127,
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -25,10 +28,17 @@ enum editor_key {
 
 struct editor_config {
     int cx, cy; 
+    int rx;
+    int rowoff;
+    int coloff;
     int screenrows;
     int screencols;
     int numrows;
     erow *row;
+    int dirty;
+    char *filename;
+    char statusmessage[80];
+    time_t statusmes_time;
     struct termios orig_termios;
 };
 
